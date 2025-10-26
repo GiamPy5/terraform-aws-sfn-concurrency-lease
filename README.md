@@ -7,7 +7,7 @@ It wraps a purpose-built Lambda function, DynamoDB table, and IAM wiring to impl
 
 ## Why this module?
 - **Deterministic fan-out throttling** – enforce a fixed number of parallel tasks across Step Functions `Map` states or nested workflows.
-- **Drop-in state machine guards** – ship pre-defined `AcquireLease` / `ReleaseLease` state JSON that can be merged into existing definitions.
+- **Drop-in state machine guards** – ship pre-defined `AcquireLease`, optional `CheckLeaseStatus` + `WaitForLease`, and `ReleaseLease` state JSON that can be merged into existing definitions.
 - **Production defaults** – opinionated CloudWatch log retention, Powertools observability configuration, and optional DynamoDB autoscaling.
 - **Transparent IAM** – emitted inline policies and managed policy attachments so platform teams can review grants before deploying.
 - **Tested runtime** – the bundled Lambda function is covered by 100% unit test coverage using moto-backed regression tests.
@@ -18,10 +18,10 @@ It wraps a purpose-built Lambda function, DynamoDB table, and IAM wiring to impl
 
 ```hcl
 module "sfn_concurrency" {
-  source = "github.com/your-org/terraform-aws-sfn-concurrency-lease"
+  source = "GiamPy5/sfn-concurrency-lease/aws"
 
-  name_prefix               = "analytics-pipeline"
-  max_concurrent_leases     = 10
+  name_prefix                = "analytics-pipeline"
+  max_concurrent_leases      = 10
   max_lease_duration_seconds = 900
 
   # Optional: let the module create the table and Lambda package
@@ -44,6 +44,8 @@ locals {
     StartAt = module.sfn_concurrency.sfn_acquire_lease_state_name
     States = merge(
       jsondecode(module.sfn_concurrency.acquire_lease_state),
+      jsondecode(module.sfn_concurrency.check_lease_status_state),
+      jsondecode(module.sfn_concurrency.wait_for_lease_state),
       {
         ProcessWork = {
           Type = "Task"
@@ -88,48 +90,92 @@ Execution flow:
 
 ---
 
-## Module inputs
+<!-- BEGIN_TF_DOCS -->
+## Requirements
 
-| Name | Type | Default | Description |
-| --- | --- | --- | --- |
-| `create` | bool | `true` | Master switch – disable to prevent all resource creation. |
-| `create_lambdas` | bool | `true` | Control creation of the `lease-manager` Lambda and IAM role. |
-| `create_dynamodb_table` | bool | `true` | Toggle managed DynamoDB table creation. |
-| `ddb_table_name` | string | `""` | Override table name. Required when reusing an external table. |
-| `lease_prefix` | string | `""` | Optional partition suffix used when multiple workflows share a table. |
-| `max_concurrent_leases` | number | `100` | Maximum number of active leases allowed at once. |
-| `max_lease_duration_seconds` | number | `600` | TTL applied to each lease item. |
-| `cloudwatch_logs_retention_in_days` | number | `7` | Retention period for Lambda log groups. |
-| `kms_key_arn` | string | `""` | Optional CMK ARN for encrypting Lambda environment variables. |
-| `ddb_hash_key` / `ddb_range_key` | string | `"PK"` / `"SK"` | Attribute names for the table primary key and sort key. |
-| `ddb_ttl_attribute_name` | string | `"ttl"` | Attribute used for DynamoDB TTL. |
-| `ddb_billing_mode` | string | `"PAY_PER_REQUEST"` | Switch to `PROVISIONED` to set read/write capacity. |
-| `ddb_read_capacity` / `ddb_write_capacity` | number | `null` | Provisioned throughput when billing mode is `PROVISIONED`. |
-| `ddb_autoscaling_enabled` | bool | `false` | Enable DynamoDB autoscaling (requires provisioned billing). |
-| `ddb_autoscaling_read` / `ddb_autoscaling_write` | object | `{ max_capacity = 1 }` | Upper bounds for autoscaling policies. |
-| `ddb_deletion_protection_enabled` | bool | `false` | Protect managed table from deletion. |
-| `powertools_configuration` | object | _(see defaults)_ | Fine-grained AWS Lambda Powertools configuration (metrics namespace, logger sample rate, tracing, etc.). |
-| `sfn_resource_id_jsonpath` | string | `"$.resource_id"` | JSONPath used to fetch the resource identifier in the `AcquireLease` state. |
-| `sfn_lease_id_jsonpath` | string | `"$.lease_id"` | JSONPath used to locate the `lease_id` for release. |
-| `sfn_lease_result_path` | string | `"$.acquireLease"` | Where to store acquisition results in the Step Functions context. |
-| `sfn_post_acquire_lease_state` | string | `"StartExecution"` | Next state name after `AcquireLease` when the lease is granted. |
-| `sfn_post_release_lease_state` | string | `"NextStep"` | Next state name after `ReleaseLease` when the lease finishes. |
-| `sfn_acquire_lease_state_name` / `sfn_release_lease_state_name` | string | `"AcquireLease"` / `"ReleaseLease"` | Keys used inside the exported state JSON. Override if these names collide with existing states. |
-| `end_state_after_release_lease` | bool | `false` | End the workflow immediately after releasing the lease. |
+| Name | Version |
+|------|---------|
+| <a name="requirement_terraform"></a> [terraform](#requirement\_terraform) | ~> 1.6 |
+| <a name="requirement_aws"></a> [aws](#requirement\_aws) | ~> 6.0 |
 
-> Tip: use `lease_prefix` when multiple teams/projects share the same DynamoDB table so each workload acquires leases from an isolated partition key.
+## Providers
 
----
+| Name | Version |
+|------|---------|
+| <a name="provider_aws"></a> [aws](#provider\_aws) | ~> 6.0 |
 
-## Module outputs
+## Modules
+
+| Name | Source | Version |
+|------|--------|---------|
+| <a name="module_dynamodb_table"></a> [dynamodb\_table](#module\_dynamodb\_table) | terraform-aws-modules/dynamodb-table/aws | ~> 5.2 |
+| <a name="module_lambda"></a> [lambda](#module\_lambda) | terraform-aws-modules/lambda/aws | ~> 8.1 |
+
+## Resources
+
+| Name | Type |
+|------|------|
+| [aws_caller_identity.current](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/data-sources/caller_identity) | data source |
+| [aws_dynamodb_table.existing_table](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/data-sources/dynamodb_table) | data source |
+| [aws_iam_policy_document.state_machine_permissions](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/data-sources/iam_policy_document) | data source |
+| [aws_region.current](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/data-sources/region) | data source |
+
+## Inputs
+
+| Name | Description | Type | Default | Required |
+|------|-------------|------|---------|:--------:|
+| <a name="input_cloudwatch_logs_retention_in_days"></a> [cloudwatch\_logs\_retention\_in\_days](#input\_cloudwatch\_logs\_retention\_in\_days) | n/a | `number` | `7` | no |
+| <a name="input_create"></a> [create](#input\_create) | n/a | `bool` | `true` | no |
+| <a name="input_create_dynamodb_table"></a> [create\_dynamodb\_table](#input\_create\_dynamodb\_table) | n/a | `bool` | `true` | no |
+| <a name="input_create_lambdas"></a> [create\_lambdas](#input\_create\_lambdas) | n/a | `bool` | `true` | no |
+| <a name="input_ddb_autoscaling_enabled"></a> [ddb\_autoscaling\_enabled](#input\_ddb\_autoscaling\_enabled) | n/a | `bool` | `false` | no |
+| <a name="input_ddb_autoscaling_read"></a> [ddb\_autoscaling\_read](#input\_ddb\_autoscaling\_read) | n/a | <pre>object({<br/>    max_capacity = number<br/>  })</pre> | <pre>{<br/>  "max_capacity": 1<br/>}</pre> | no |
+| <a name="input_ddb_autoscaling_write"></a> [ddb\_autoscaling\_write](#input\_ddb\_autoscaling\_write) | n/a | <pre>object({<br/>    max_capacity = number<br/>  })</pre> | <pre>{<br/>  "max_capacity": 1<br/>}</pre> | no |
+| <a name="input_ddb_billing_mode"></a> [ddb\_billing\_mode](#input\_ddb\_billing\_mode) | n/a | `string` | `"PAY_PER_REQUEST"` | no |
+| <a name="input_ddb_deletion_protection_enabled"></a> [ddb\_deletion\_protection\_enabled](#input\_ddb\_deletion\_protection\_enabled) | n/a | `bool` | `false` | no |
+| <a name="input_ddb_hash_key"></a> [ddb\_hash\_key](#input\_ddb\_hash\_key) | n/a | `string` | `"PK"` | no |
+| <a name="input_ddb_point_in_time_recovery_enabled"></a> [ddb\_point\_in\_time\_recovery\_enabled](#input\_ddb\_point\_in\_time\_recovery\_enabled) | n/a | `bool` | `false` | no |
+| <a name="input_ddb_range_key"></a> [ddb\_range\_key](#input\_ddb\_range\_key) | n/a | `string` | `"SK"` | no |
+| <a name="input_ddb_read_capacity"></a> [ddb\_read\_capacity](#input\_ddb\_read\_capacity) | n/a | `number` | `10` | no |
+| <a name="input_ddb_table_name"></a> [ddb\_table\_name](#input\_ddb\_table\_name) | n/a | `string` | `""` | no |
+| <a name="input_ddb_ttl_attribute_name"></a> [ddb\_ttl\_attribute\_name](#input\_ddb\_ttl\_attribute\_name) | n/a | `string` | `"ttl"` | no |
+| <a name="input_ddb_write_capacity"></a> [ddb\_write\_capacity](#input\_ddb\_write\_capacity) | n/a | `number` | `10` | no |
+| <a name="input_end_state_after_release_lease"></a> [end\_state\_after\_release\_lease](#input\_end\_state\_after\_release\_lease) | n/a | `bool` | `false` | no |
+| <a name="input_kms_key_arn"></a> [kms\_key\_arn](#input\_kms\_key\_arn) | n/a | `string` | `""` | no |
+| <a name="input_lambdas_tracing_enabled"></a> [lambdas\_tracing\_enabled](#input\_lambdas\_tracing\_enabled) | n/a | `bool` | `false` | no |
+| <a name="input_lease_prefix"></a> [lease\_prefix](#input\_lease\_prefix) | n/a | `string` | `""` | no |
+| <a name="input_max_concurrent_leases"></a> [max\_concurrent\_leases](#input\_max\_concurrent\_leases) | n/a | `number` | `100` | no |
+| <a name="input_max_lease_duration_seconds"></a> [max\_lease\_duration\_seconds](#input\_max\_lease\_duration\_seconds) | n/a | `number` | `600` | no |
+| <a name="input_name_prefix"></a> [name\_prefix](#input\_name\_prefix) | n/a | `string` | `"concurrency-mgmt"` | no |
+| <a name="input_powertools_configuration"></a> [powertools\_configuration](#input\_powertools\_configuration) | n/a | <pre>object({<br/>    metrics_namespace       = optional(string, "terraform-aws-sfn-concurrency-lease")<br/>    metrics_disabled        = optional(bool, false)<br/>    trace_disabled          = optional(bool, false)<br/>    tracer_capture_response = optional(bool, true)<br/>    tracer_capture_error    = optional(bool, true)<br/>    trace_middlewares       = optional(list(string), [])<br/>    logger_log_event        = optional(bool, false)<br/>    logger_sample_rate      = optional(number, 0.1)<br/>    log_deduplication       = optional(bool, false)<br/>    parameters_max_age      = optional(number, 10)<br/>    parameters_ssm_decrypt  = optional(bool, false)<br/>    dev_mode                = optional(bool, false)<br/>    log_level               = optional(string, "INFO")<br/>  })</pre> | <pre>{<br/>  "dev_mode": true,<br/>  "log_deduplication": false,<br/>  "log_level": "DEBUG",<br/>  "logger_log_event": true,<br/>  "logger_sample_rate": 0.1,<br/>  "metrics_disabled": false,<br/>  "metrics_namespace": "terraform-aws-sfn-concurrency-lease",<br/>  "parameters_max_age": 10,<br/>  "parameters_ssm_decrypt": false,<br/>  "trace_disabled": false,<br/>  "trace_middlewares": [],<br/>  "tracer_capture_error": true,<br/>  "tracer_capture_response": true<br/>}</pre> | no |
+| <a name="input_sfn_acquire_lease_state_name"></a> [sfn\_acquire\_lease\_state\_name](#input\_sfn\_acquire\_lease\_state\_name) | n/a | `string` | `"AcquireLease"` | no |
+| <a name="input_sfn_check_lease_state_name"></a> [sfn\_check\_lease\_state\_name](#input\_sfn\_check\_lease\_state\_name) | State name for the optional Choice state that inspects the acquire result. | `string` | `"CheckLeaseStatus"` | no |
+| <a name="input_sfn_lease_id_jsonpath"></a> [sfn\_lease\_id\_jsonpath](#input\_sfn\_lease\_id\_jsonpath) | JSONPath to extract the lease ID from the Step Functions context for the release step. | `string` | `"$.lease_id"` | no |
+| <a name="input_sfn_lease_result_path"></a> [sfn\_lease\_result\_path](#input\_sfn\_lease\_result\_path) | n/a | `string` | `"$.acquireLease"` | no |
+| <a name="input_sfn_post_acquire_lease_state"></a> [sfn\_post\_acquire\_lease\_state](#input\_sfn\_post\_acquire\_lease\_state) | n/a | `string` | `"StartExecution"` | no |
+| <a name="input_sfn_post_release_lease_state"></a> [sfn\_post\_release\_lease\_state](#input\_sfn\_post\_release\_lease\_state) | n/a | `string` | `"NextStep"` | no |
+| <a name="input_sfn_release_lease_result_path"></a> [sfn\_release\_lease\_result\_path](#input\_sfn\_release\_lease\_result\_path) | n/a | `string` | `"$.releaseLease"` | no |
+| <a name="input_sfn_release_lease_state_name"></a> [sfn\_release\_lease\_state\_name](#input\_sfn\_release\_lease\_state\_name) | n/a | `string` | `"ReleaseLease"` | no |
+| <a name="input_sfn_resource_id_jsonpath"></a> [sfn\_resource\_id\_jsonpath](#input\_sfn\_resource\_id\_jsonpath) | JSONPath to extract the resource ID from the Step Functions context for the acquire step. | `string` | `"$.resource_id"` | no |
+| <a name="input_sfn_wait_seconds"></a> [sfn\_wait\_seconds](#input\_sfn\_wait\_seconds) | Seconds the Wait state should pause before retrying an acquire call. | `number` | `5` | no |
+| <a name="input_sfn_wait_state_name"></a> [sfn\_wait\_state\_name](#input\_sfn\_wait\_state\_name) | State name for the optional Wait state that pauses before retrying an acquire. | `string` | `"WaitForLease"` | no |
+
+## Outputs
 
 | Name | Description |
-| --- | --- |
-| `dynamodb_table_name` / `dynamodb_table_arn` | The resolved table name and ARN (managed or external). |
-| `acquire_lease_state` | JSON-encoded Step Functions state fragment for acquiring a lease. |
-| `release_lease_state` | JSON-encoded fragment for releasing a lease (honours `end_state_after_release_lease`). |
-| `sfn_acquire_lease_state_name` / `sfn_release_lease_state_name` | Convenience outputs for referencing the state keys without hard-coding. |
-| `lambda_permissions` | Inline IAM policy JSON that grants `lambda:InvokeFunction` on the lease-manager Lambda. Attach this to your Step Functions role. |
+|------|-------------|
+| <a name="output_acquire_lease_state"></a> [acquire\_lease\_state](#output\_acquire\_lease\_state) | n/a |
+| <a name="output_check_lease_status_state"></a> [check\_lease\_status\_state](#output\_check\_lease\_status\_state) | n/a |
+| <a name="output_dynamodb_table_arn"></a> [dynamodb\_table\_arn](#output\_dynamodb\_table\_arn) | n/a |
+| <a name="output_dynamodb_table_name"></a> [dynamodb\_table\_name](#output\_dynamodb\_table\_name) | n/a |
+| <a name="output_lambda_permissions"></a> [lambda\_permissions](#output\_lambda\_permissions) | n/a |
+| <a name="output_release_lease_state"></a> [release\_lease\_state](#output\_release\_lease\_state) | n/a |
+| <a name="output_sfn_acquire_lease_state_name"></a> [sfn\_acquire\_lease\_state\_name](#output\_sfn\_acquire\_lease\_state\_name) | n/a |
+| <a name="output_sfn_check_lease_state_name"></a> [sfn\_check\_lease\_state\_name](#output\_sfn\_check\_lease\_state\_name) | n/a |
+| <a name="output_sfn_release_lease_state_name"></a> [sfn\_release\_lease\_state\_name](#output\_sfn\_release\_lease\_state\_name) | n/a |
+| <a name="output_sfn_wait_state_name"></a> [sfn\_wait\_state\_name](#output\_sfn\_wait\_state\_name) | n/a |
+| <a name="output_wait_for_lease_state"></a> [wait\_for\_lease\_state](#output\_wait\_for\_lease\_state) | n/a |
+<!-- END_TF_DOCS -->
 
 ---
 

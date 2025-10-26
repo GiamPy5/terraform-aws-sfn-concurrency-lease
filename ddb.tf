@@ -12,12 +12,17 @@ module "dynamodb_table" {
   count = local.create_dynamodb_table ? 1 : 0
 
   source  = "terraform-aws-modules/dynamodb-table/aws"
-  version = "4.2.0"
+  version = "~> 5.2"
 
   name = var.ddb_table_name != "" ? var.ddb_table_name : "${var.name_prefix}-leases"
 
   ttl_attribute_name = var.ddb_ttl_attribute_name
   ttl_enabled        = true
+
+  point_in_time_recovery_enabled = var.ddb_point_in_time_recovery_enabled
+
+  server_side_encryption_enabled     = var.kms_key_arn == "" ? false : true
+  server_side_encryption_kms_key_arn = var.kms_key_arn == "" ? null : var.kms_key_arn
 
   attributes = [
     {
@@ -44,6 +49,6 @@ module "dynamodb_table" {
 }
 
 locals {
-  ddb_table_name = local.create_dynamodb_table ? module.dynamodb_table[0].dynamodb_table_id : coalesce(try(data.aws_dynamodb_table.existing_table[0].name, null), var.ddb_table_name)
+  ddb_table_name = local.create_dynamodb_table ? module.dynamodb_table[0].dynamodb_table_id : (length(data.aws_dynamodb_table.existing_table) > 0 ? data.aws_dynamodb_table.existing_table[0].name : var.ddb_table_name)
   ddb_table_arn  = local.create_dynamodb_table ? module.dynamodb_table[0].dynamodb_table_arn : try(data.aws_dynamodb_table.existing_table[0].arn, "")
 }

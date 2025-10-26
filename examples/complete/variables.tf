@@ -1,7 +1,7 @@
 variable "region" {
   description = "AWS region where the example will be deployed."
   type        = string
-  default     = "us-east-1"
+  default     = "eu-central-1"
 }
 
 variable "lease_table_name" {
