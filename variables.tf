@@ -8,6 +8,11 @@ variable "create_lambdas" {
   default = true
 }
 
+variable "lambdas_tracing_enabled" {
+  type    = bool
+  default = false
+}
+
 variable "create_dynamodb_table" {
   type    = bool
   default = true
@@ -75,12 +80,17 @@ variable "ddb_billing_mode" {
 
 variable "ddb_read_capacity" {
   type    = number
-  default = null
+  default = 10
 }
 
 variable "ddb_write_capacity" {
   type    = number
-  default = null
+  default = 10
+}
+
+variable "ddb_point_in_time_recovery_enabled" {
+  type    = bool
+  default = false
 }
 
 variable "ddb_autoscaling_enabled" {
@@ -139,6 +149,11 @@ variable "powertools_configuration" {
   }
 }
 
+variable "sfn_release_lease_result_path" {
+  type    = string
+  default = "$.releaseLease"
+}
+
 variable "sfn_resource_id_jsonpath" {
   type        = string
   default     = "$.resource_id"
@@ -166,6 +181,12 @@ variable "sfn_post_release_lease_state" {
   default = "NextStep"
 }
 
+variable "sfn_check_lease_state_name" {
+  type        = string
+  default     = "CheckLeaseStatus"
+  description = "State name for the optional Choice state that inspects the acquire result."
+}
+
 variable "sfn_acquire_lease_state_name" {
   type    = string
   default = "AcquireLease"
@@ -174,6 +195,18 @@ variable "sfn_acquire_lease_state_name" {
 variable "sfn_release_lease_state_name" {
   type    = string
   default = "ReleaseLease"
+}
+
+variable "sfn_wait_state_name" {
+  type        = string
+  default     = "WaitForLease"
+  description = "State name for the optional Wait state that pauses before retrying an acquire."
+}
+
+variable "sfn_wait_seconds" {
+  type        = number
+  default     = 5
+  description = "Seconds the Wait state should pause before retrying an acquire call."
 }
 
 variable "end_state_after_release_lease" {

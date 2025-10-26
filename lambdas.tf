@@ -7,7 +7,12 @@ locals {
 
   lambda_runtime        = "python3.12"
   lambda_architectures  = ["arm64"]
-  powertools_layer_name = "AWSLambdaPowertoolsPythonV3-312-arm64:18"
+  powertools_layer_name = "AWSLambdaPowertoolsPythonV3-${replace(local.lambda_runtime, ".", "")}-${local.lambda_architectures[0]}:18"
+
+  layers = concat(
+    ["arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"],
+    var.lambdas_tracing_enabled ? ["arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess"] : []
+  )
 
   lambdas = {
     "lease-manager" = {
@@ -27,18 +32,27 @@ locals {
       timeout = 5
       policy_json = jsonencode({
         Version = "2012-10-17"
-        Statement = [
-          {
-            Effect   = "Allow"
-            Action   = ["dynamodb:Query", "dynamodb:PutItem", "dynamodb:DeleteItem"]
-            Resource = local.ddb_table_arn
-            Condition = {
-              "ForAllValues:StringLike" = {
-                "dynamodb:LeadingKeys" = local.lease_hash_value
+        Statement = concat(
+          [
+            {
+              Effect   = "Allow"
+              Action   = ["dynamodb:Query", "dynamodb:PutItem", "dynamodb:DeleteItem"]
+              Resource = local.ddb_table_arn
+              Condition = {
+                "ForAllValues:StringLike" = {
+                  "dynamodb:LeadingKeys" = local.lease_hash_value
+                }
               }
             }
-          }
-        ]
+          ],
+          var.kms_key_arn != "" ? [
+            {
+              Effect   = "Allow"
+              Action   = ["kms:Decrypt"]
+              Resource = var.kms_key_arn
+            }
+          ] : []
+        )
       })
     }
   }
@@ -50,13 +64,16 @@ locals {
 
 module "lambda" {
   source  = "terraform-aws-modules/lambda/aws"
-  version = "8.1.0"
+  version = "~> 8.1"
 
   for_each = local.create_lambdas == true ? local.lambdas : {}
 
   create_role     = true
   create_package  = true
   create_function = true
+
+  attach_tracing_policy = var.lambdas_tracing_enabled
+  tracing_mode          = var.lambdas_tracing_enabled ? "Active" : null
 
   kms_key_arn = var.kms_key_arn
 
@@ -68,7 +85,7 @@ module "lambda" {
   handler            = each.value.handler
   policies           = each.value.policies
   layers             = local.lambda_layers
-  attach_policy_json = try(each.value.policy_json, "") == "" ? false : true
+  attach_policy_json = contains(keys(each.value), "policy_json")
   policy_json        = try(each.value.policy_json, "")
   timeout            = each.value.timeout
 
