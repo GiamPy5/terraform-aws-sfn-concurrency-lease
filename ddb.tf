@@ -40,8 +40,8 @@ module "dynamodb_table" {
 
   billing_mode = var.ddb_billing_mode
 
-  read_capacity  = var.ddb_read_capacity
-  write_capacity = var.ddb_write_capacity
+  read_capacity  = var.ddb_billing_mode == "PAY_PER_REQUEST" ? 0 : var.ddb_read_capacity
+  write_capacity = var.ddb_billing_mode == "PAY_PER_REQUEST" ? 0 : var.ddb_write_capacity
 
   deletion_protection_enabled           = var.ddb_deletion_protection_enabled
   autoscaling_enabled                   = var.ddb_autoscaling_enabled

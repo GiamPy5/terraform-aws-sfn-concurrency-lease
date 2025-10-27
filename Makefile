@@ -22,7 +22,3 @@ docs:
 lint:
 	@echo "Running terraform fmt..."
 	@terraform fmt --recursive
-
-tfsec:
-	@echo "Running tfsec..."
-	@docker run --rm -it -v "${PWD}/examples/complete:/src" aquasec/tfsec /src
